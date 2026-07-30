@@ -121,6 +121,14 @@ select:focus-visible,
   gap: 20px;
 }
 
+.section-heading-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .brand {
   display: inline-flex;
   align-items: center;
@@ -1350,6 +1358,98 @@ input:read-only {
 .supporting-text {
   margin-top: 0;
   line-height: 1.7;
+}
+
+.sync-form {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.sync-form label > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sync-form input {
+  width: 100%;
+}
+
+.sync-status {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.focus-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.focus-clock {
+  margin: 26px 0 5px;
+  color: var(--ink);
+  font-size: clamp(48px, 12vw, 76px);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
+  text-align: center;
+}
+
+.focus-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.sync-status[data-kind="error"] {
+  color: var(--coral);
+}
+
+.sync-status[data-kind="success"] {
+  color: var(--teal);
+}
+
+.sync-conflict {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px solid #d8b86b;
+  border-radius: 5px;
+  background: var(--amber-soft);
+}
+
+.sync-conflict strong {
+  font-size: 12px;
+}
+
+.sync-conflict p {
+  margin: 0;
+  color: #6f531f;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.connection-state.synced,
+.storage-badge.synced {
+  color: var(--teal);
+}
+
+.connection-state.pending,
+.storage-badge.pending {
+  color: var(--amber);
+}
+
+.connection-state.error,
+.storage-badge.error {
+  color: var(--coral);
 }
 
 .last-backup {

@@ -320,17 +320,461 @@
   let draftTimer = 0;
   let formHasPendingDraft = false;
   let deferredInstallPrompt = null;
+  const FOCUS_TIMER_KEY = "yantu-kaoyan-focus-timer-v1";
+  let focusSeconds = 25 * 60;
+  let focusInitialSeconds = 25 * 60;
+  let focusEndAt = 0;
+  let focusInterval = 0;
+  let focusRunning = false;
+  let focusDate = selectedDate;
 
   function saveState() {
     state.meta.updatedAt = new Date().toISOString();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      if (!syncApplyingRemote) supabaseSync.queuePush();
       return true;
     } catch (error) {
       showToast("浏览器未能保存数据，请先导出备份并检查存储权限");
       return false;
     }
   }
+
+  /*
+   * Optional Supabase adapter. Local storage remains the source of truth while
+   * offline; a signed-in user gets one RLS-protected row containing the same
+   * sanitized state. The adapter is deliberately isolated from render logic so
+   * a missing CDN, project, table, or network never breaks the dashboard.
+   */
+  const SUPABASE_CONFIG_KEY = "yantu-kaoyan-supabase-config-v1";
+  const SUPABASE_SYNC_MARKER_KEY = "yantu-kaoyan-supabase-sync-marker-v1";
+  const SUPABASE_LOCAL_BACKUP_KEY = "yantu-kaoyan-supabase-pre-sync-backup-v1";
+  const SUPABASE_TABLE = "study_states";
+  let syncApplyingRemote = false;
+  const supabaseSync = (() => {
+    let client = null;
+    let currentUser = null;
+    let config = null;
+    let channel = null;
+    let authSubscription = null;
+    let pushTimer = 0;
+    let pollTimer = 0;
+    let pushQueued = false;
+    let conflict = null;
+    let visual = { text: "仅此设备", kind: "local" };
+
+    function readConfig() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(SUPABASE_CONFIG_KEY) || "null");
+        if (!parsed || typeof parsed !== "object") return null;
+        const url = String(parsed.url || "").trim().replace(/\/$/, "");
+        const anonKey = String(parsed.anonKey || "").trim();
+        if (!/^https:\/\/[^\s]+$/i.test(url) || anonKey.length < 20) return null;
+        return { url, anonKey };
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function saveConfig(nextConfig) {
+      config = nextConfig;
+      try {
+        localStorage.setItem(SUPABASE_CONFIG_KEY, JSON.stringify(nextConfig));
+      } catch (error) {
+        // Configuration is optional; a storage failure must not block local use.
+      }
+    }
+
+    function errorText(error) {
+      return String(error?.message || error?.error_description || error || "未知错误").slice(0, 180);
+    }
+
+    function timestamp(value) {
+      const parsed = Date.parse(value || "");
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function setVisual(text, kind = "local") {
+      visual = { text, kind };
+      const status = $("#syncStatus");
+      if (status) {
+        status.textContent = text;
+        status.dataset.kind = kind;
+      }
+      const connection = $("#connectionState");
+      if (connection) {
+        connection.className = `connection-state ${kind}`;
+        connection.innerHTML = "<i></i>";
+        connection.append(document.createTextNode(text));
+      }
+      const badge = $("#storageBadge");
+      if (badge) {
+        badge.classList.remove("local", "pending", "synced", "error");
+        badge.classList.add(kind);
+        const label = badge.lastElementChild;
+        if (label) label.textContent = text;
+      }
+      const signOut = $("#syncSignOutButton");
+      if (signOut) signOut.hidden = !currentUser;
+      renderConflict();
+    }
+
+    function render() {
+      const urlInput = $("#syncProjectUrl");
+      const keyInput = $("#syncAnonKey");
+      const emailInput = $("#syncEmail");
+      if (urlInput && config) urlInput.value = config.url;
+      if (keyInput && config) keyInput.value = config.anonKey;
+      if (emailInput && currentUser?.email) emailInput.value = currentUser.email;
+      setVisual(visual.text, visual.kind);
+    }
+
+    function readSyncMarker() {
+      try {
+        const marker = JSON.parse(localStorage.getItem(SUPABASE_SYNC_MARKER_KEY) || "null");
+        return marker?.userId === currentUser?.id ? marker : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function writeSyncMarker(updatedAt) {
+      try {
+        localStorage.setItem(SUPABASE_SYNC_MARKER_KEY, JSON.stringify({ updatedAt, userId: currentUser?.id || "" }));
+      } catch (error) {
+        // The marker is only a conflict hint; cloud sync can continue without it.
+      }
+    }
+
+    function hasMeaningfulLocalState() {
+      const baseline = sanitizeState(createDefaultState(true), false);
+      const hasLogs = Object.keys(state.logs || {}).length > 0 || Object.keys(state.drafts || {}).length > 0;
+      const hasChangedTask = Object.entries(state.tasks || {}).some(([date, tasks]) => tasks.some((task) => {
+        const seeded = baseline.tasks[date]?.find((item) => item.id === task.id);
+        return !seeded || JSON.stringify(task) !== JSON.stringify(seeded);
+      }));
+      const settings = state.settings || {};
+      const baselineSettings = baseline.settings;
+      const settingsChanged = settings.targetSchool !== baselineSettings.targetSchool
+        || settings.targetProgram !== baselineSettings.targetProgram
+        || settings.examDate !== baselineSettings.examDate
+        || JSON.stringify(settings.targetScores) !== JSON.stringify(baselineSettings.targetScores)
+        || JSON.stringify(settings.progress) !== JSON.stringify(baselineSettings.progress);
+      return hasLogs || hasChangedTask || settingsChanged || Boolean(state.meta?.lastBackupAt);
+    }
+
+    function localAndRemoteChangedSinceLastSync(remoteTime) {
+      const marker = readSyncMarker();
+      if (!marker) return hasMeaningfulLocalState();
+      const markerTime = timestamp(marker.updatedAt);
+      const localTime = timestamp(state.meta?.updatedAt);
+      return localTime > markerTime && remoteTime > markerTime;
+    }
+
+    function renderConflict() {
+      const box = $("#syncConflict");
+      if (!box) return;
+      box.hidden = !conflict;
+      const text = $("#syncConflictText");
+      if (text && conflict) text.textContent = conflict.message;
+    }
+
+    function showConflict(remote, local, remoteUpdatedAt) {
+      conflict = { remote, local, remoteUpdatedAt, message: "本机已有学习记录，云端也有一份数据。请先选择保留哪一份，避免静默覆盖。" };
+      try {
+        localStorage.setItem(SUPABASE_LOCAL_BACKUP_KEY, JSON.stringify(local));
+      } catch (error) {
+        // Keep the in-memory conflict even if the backup cannot be written.
+      }
+      setVisual("需要选择同步版本", "error");
+    }
+
+    function clearConflict() {
+      conflict = null;
+      renderConflict();
+    }
+
+    async function useCloudVersion() {
+      if (!conflict) return;
+      applyRemote(conflict.remote);
+      setVisual("已选择云端版本", "synced");
+    }
+
+    async function keepLocalVersion() {
+      if (!conflict) return;
+      const local = conflict.local;
+      clearConflict();
+      state = sanitizeState(local, false);
+      state.meta.updatedAt = new Date().toISOString();
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (error) { /* cloud copy remains available */ }
+      renderEverything();
+      pushQueued = true;
+      if (await pushNow(true)) setVisual("本机版本已上传", "synced");
+    }
+
+    function startPolling() {
+      if (pollTimer || !currentUser) return;
+      pollTimer = window.setInterval(() => {
+        if (document.visibilityState === "visible" && !conflict) pullOrPush().catch(() => undefined);
+      }, 60000);
+    }
+
+    function stopPolling() {
+      window.clearInterval(pollTimer);
+      pollTimer = 0;
+    }
+
+    function snapshot() {
+      return sanitizeState(state, false);
+    }
+
+    async function removeChannel() {
+      if (!client || !channel) return;
+      try {
+        await client.removeChannel(channel);
+      } catch (error) {
+        // A stale realtime channel should not prevent reconnecting.
+      }
+      channel = null;
+    }
+
+    function applyRemote(payload) {
+      const remote = sanitizeState(payload, false);
+      syncApplyingRemote = true;
+      try {
+        state = remote;
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        } catch (error) {
+          // Keep the in-memory remote state even if storage is full or blocked.
+        }
+        selectedDate = validDateKey(selectedDate) ? selectedDate : localDateKey();
+        calendarSelectedDate = selectedDate;
+        calendarDate = monthKeyDate(selectedDate);
+        writeSyncMarker(remote.meta.updatedAt);
+        clearConflict();
+        renderEverything();
+      } finally {
+        syncApplyingRemote = false;
+      }
+    }
+
+    async function pushNow(force = false) {
+      if (!client || !currentUser || (!pushQueued && !force)) return false;
+      pushQueued = false;
+      const payload = snapshot();
+      const updatedAt = String(payload.meta.updatedAt || new Date().toISOString());
+      payload.meta.updatedAt = updatedAt;
+      const { error } = await client.from(SUPABASE_TABLE).upsert({
+        user_id: currentUser.id,
+        payload,
+        updated_at: updatedAt
+      }, { onConflict: "user_id" });
+      if (error) {
+        pushQueued = true;
+        setVisual("云端暂不可用，已保留本地", "error");
+        return false;
+      }
+      writeSyncMarker(updatedAt);
+      clearConflict();
+      // A local edit may have happened while the request was in flight.
+      if (state.meta.updatedAt !== updatedAt) {
+        queuePush();
+        return true;
+      }
+      setVisual("已同步", "synced");
+      return true;
+    }
+
+    function queuePush() {
+      if (syncApplyingRemote || !client || !currentUser) return;
+      pushQueued = true;
+      window.clearTimeout(pushTimer);
+      pushTimer = window.setTimeout(() => {
+        pullOrPush().catch(() => setVisual("云端暂不可用，已保留本地", "error"));
+      }, 450);
+      setVisual("等待同步", "pending");
+    }
+
+    async function pullOrPush() {
+      if (!client || !currentUser) return;
+      setVisual("正在同步…", "pending");
+      const { data, error } = await client
+        .from(SUPABASE_TABLE)
+        .select("payload,updated_at")
+        .eq("user_id", currentUser.id)
+        .maybeSingle();
+      if (error) {
+        setVisual(`云端连接失败：${errorText(error)}`, "error");
+        return;
+      }
+      if (!data?.payload) {
+        pushQueued = true;
+        if (await pushNow()) setVisual("已创建云端副本", "synced");
+        return;
+      }
+      const remote = sanitizeState(data.payload, false);
+      const localTime = timestamp(state.meta.updatedAt);
+      const remoteTime = timestamp(remote.meta.updatedAt || data.updated_at);
+      if (!readSyncMarker() && !hasMeaningfulLocalState()) {
+        applyRemote(remote);
+        setVisual("已从云端更新", "synced");
+        return;
+      }
+      if (localAndRemoteChangedSinceLastSync(remoteTime)) {
+        showConflict(remote, state, data.updated_at || remote.meta.updatedAt || "");
+        return;
+      }
+      if (remoteTime > localTime) {
+        applyRemote(remote);
+        setVisual("已从云端更新", "synced");
+      } else if (localTime > remoteTime || pushQueued) {
+        pushQueued = true;
+        await pushNow();
+      } else {
+        setVisual("已同步", "synced");
+      }
+    }
+
+    async function subscribeRealtime() {
+      await removeChannel();
+      if (!client || !currentUser) return;
+      channel = client
+        .channel(`study-state-${currentUser.id}`)
+        .on("postgres_changes", {
+          event: "*",
+          schema: "public",
+          table: SUPABASE_TABLE,
+          filter: `user_id=eq.${currentUser.id}`
+        }, (event) => {
+          const nextPayload = event?.new?.payload;
+          if (!nextPayload || syncApplyingRemote) return;
+          try {
+            const remote = sanitizeState(nextPayload, false);
+            const remoteTime = timestamp(remote.meta.updatedAt || event.new.updated_at);
+            const localTime = timestamp(state.meta.updatedAt);
+            if (localAndRemoteChangedSinceLastSync(remoteTime)) {
+              showConflict(remote, state, event.new.updated_at || remote.meta.updatedAt || "");
+              return;
+            }
+            if (remoteTime > localTime) {
+              applyRemote(remote);
+              setVisual("已从云端更新", "synced");
+            }
+          } catch (error) {
+            setVisual("收到无法识别的云端数据", "error");
+          }
+        })
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED" && !conflict) setVisual("已同步", "synced");
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") setVisual("实时同步暂不可用", "error");
+        });
+    }
+
+    async function handleSession(sessionUser) {
+      if (!sessionUser) {
+        currentUser = null;
+        stopPolling();
+        await removeChannel();
+        setVisual(config ? "已连接项目，等待登录" : "仅此设备", config ? "pending" : "local");
+        render();
+        return;
+      }
+      const changed = currentUser?.id !== sessionUser.id;
+      currentUser = sessionUser;
+      if (!changed && channel) {
+        render();
+        return;
+      }
+      await pullOrPush();
+      await subscribeRealtime();
+      startPolling();
+      render();
+    }
+
+    async function configure(url, anonKey) {
+      const normalizedUrl = String(url || "").trim().replace(/\/$/, "");
+      const normalizedKey = String(anonKey || "").trim();
+      if (!/^https:\/\/[^\s]+$/i.test(normalizedUrl)) throw new Error("Supabase 项目地址必须以 https:// 开头");
+      if (normalizedKey.length < 20) throw new Error("请填写有效的 anon 公钥");
+      if (!window.supabase?.createClient) throw new Error("云端组件尚未加载，请联网后刷新页面");
+      await removeChannel();
+      if (authSubscription) {
+        authSubscription.unsubscribe();
+        authSubscription = null;
+      }
+      saveConfig({ url: normalizedUrl, anonKey: normalizedKey });
+      client = window.supabase.createClient(normalizedUrl, normalizedKey, {
+        auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+      });
+      const authState = client.auth.onAuthStateChange((event, session) => {
+        window.setTimeout(() => handleSession(session?.user || null).catch((error) => setVisual(`同步初始化失败：${errorText(error)}`, "error")), 0);
+      });
+      authSubscription = authState?.data?.subscription || null;
+      const { data, error } = await client.auth.getSession();
+      if (error) throw error;
+      await handleSession(data.session?.user || null);
+      return Boolean(data.session?.user);
+    }
+
+    async function signIn(email, password) {
+      if (!client) throw new Error("请先填写项目地址、公钥并连接");
+      const { error } = await client.auth.signInWithPassword({ email: String(email || "").trim(), password: String(password || "") });
+      if (error) throw error;
+    }
+
+    async function signUp(email, password) {
+      if (!client) throw new Error("请先填写项目地址、公钥并连接");
+      const { data, error } = await client.auth.signUp({ email: String(email || "").trim(), password: String(password || "") });
+      if (error) throw error;
+      if (!data.session) setVisual("注册成功，请先完成邮箱验证", "pending");
+    }
+
+    async function signOut() {
+      if (!client) return;
+      const { error } = await client.auth.signOut();
+      if (error) throw error;
+      pushQueued = false;
+      stopPolling();
+      setVisual("已退出云端，仅此设备", "local");
+    }
+
+    async function init() {
+      window.addEventListener("online", () => {
+        if (currentUser && !conflict) pullOrPush().catch(() => undefined);
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible" && currentUser && !conflict) pullOrPush().catch(() => undefined);
+      });
+      config = readConfig();
+      if (!config) {
+        setVisual("仅此设备", "local");
+        return;
+      }
+      try {
+        await configure(config.url, config.anonKey);
+      } catch (error) {
+        setVisual(`云端配置待检查：${errorText(error)}`, "error");
+      }
+    }
+
+    return {
+      init,
+      configure,
+      signIn,
+      signUp,
+      signOut,
+      useCloudVersion,
+      keepLocalVersion,
+      queuePush,
+      render,
+      setStatus: setVisual,
+      get currentUser() { return currentUser; },
+      get visual() { return visual; }
+    };
+  })();
+
+  window.YantuSync = supabaseSync;
 
   function showToast(message) {
     const toast = $("#toast");
@@ -352,6 +796,124 @@
     if (!dialog) return;
     if (typeof dialog.close === "function") dialog.close();
     else dialog.removeAttribute("open");
+  }
+
+  function formatFocusClock(seconds) {
+    const value = Math.max(0, integer(seconds));
+    return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+  }
+
+  function persistFocusTimer() {
+    try {
+      if (!focusRunning) {
+        localStorage.removeItem(FOCUS_TIMER_KEY);
+        return;
+      }
+      localStorage.setItem(FOCUS_TIMER_KEY, JSON.stringify({
+        subject: $("#focusSubject")?.value || "math",
+        date: focusDate,
+        initialSeconds: focusInitialSeconds,
+        endAt: focusEndAt
+      }));
+    } catch (error) {
+      // The timer can continue in memory when storage is unavailable.
+    }
+  }
+
+  function renderFocusTimer() {
+    const clock = $("#focusClock");
+    const start = $("#focusStartButton");
+    const status = $("#focusStatus");
+    if (clock) clock.textContent = formatFocusClock(focusSeconds);
+    if (start) start.textContent = focusRunning ? "暂停" : (focusSeconds === 0 ? "再次专注" : (focusSeconds < focusInitialSeconds ? "继续专注" : "开始专注"));
+    if (status) status.textContent = focusRunning ? "专注进行中，完成后会记入当天打卡草稿" : (focusSeconds === 0 ? "本次专注已完成并记录" : (focusSeconds < focusInitialSeconds ? "已暂停" : "准备开始"));
+  }
+
+  function recordFocusMinutes() {
+    const minutes = Math.max(1, Math.round(focusInitialSeconds / 60));
+    const subject = $("#focusSubject")?.value || "math";
+    const date = validDateKey(focusDate) ? focusDate : selectedDate;
+    const base = state.drafts[date] || state.logs[date] || emptyLog();
+    const next = sanitizeLog(base, true);
+    next.subjects[subject].minutes = integer(next.subjects[subject].minutes) + minutes;
+    next.updatedAt = new Date().toISOString();
+    state.drafts[date] = next;
+    saveState();
+    renderAllDynamic(true);
+    showToast(`专注 ${minutes} 分钟已记入${SUBJECTS[subject].short}打卡草稿`);
+    if (navigator.vibrate) navigator.vibrate([120, 80, 120]);
+  }
+
+  function completeFocusTimer() {
+    focusRunning = false;
+    window.clearInterval(focusInterval);
+    focusInterval = 0;
+    focusSeconds = 0;
+    persistFocusTimer();
+    recordFocusMinutes();
+    renderFocusTimer();
+  }
+
+  function tickFocusTimer() {
+    focusSeconds = Math.max(0, Math.ceil((focusEndAt - Date.now()) / 1000));
+    if (focusSeconds <= 0) {
+      completeFocusTimer();
+      return;
+    }
+    renderFocusTimer();
+  }
+
+  function startFocusTimer() {
+    if (focusRunning) {
+      focusSeconds = Math.max(0, Math.ceil((focusEndAt - Date.now()) / 1000));
+      focusRunning = false;
+      window.clearInterval(focusInterval);
+      focusInterval = 0;
+      persistFocusTimer();
+      renderFocusTimer();
+      return;
+    }
+    if (focusSeconds <= 0) resetFocusTimer();
+    if (focusSeconds === focusInitialSeconds) focusDate = selectedDate;
+    focusRunning = true;
+    focusEndAt = Date.now() + focusSeconds * 1000;
+    focusInterval = window.setInterval(tickFocusTimer, 500);
+    persistFocusTimer();
+    renderFocusTimer();
+  }
+
+  function resetFocusTimer() {
+    focusRunning = false;
+    window.clearInterval(focusInterval);
+    focusInterval = 0;
+    focusInitialSeconds = integer($("#focusPreset")?.value || 25) * 60;
+    focusSeconds = focusInitialSeconds;
+    persistFocusTimer();
+    renderFocusTimer();
+  }
+
+  function restoreFocusTimer() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(FOCUS_TIMER_KEY) || "null");
+      if (!saved || !saved.endAt) return;
+      if ($("#focusSubject")) $("#focusSubject").value = saved.subject || "math";
+      focusDate = validDateKey(saved.date) ? saved.date : selectedDate;
+      focusInitialSeconds = integer(saved.initialSeconds, 25 * 60);
+      focusEndAt = Number(saved.endAt);
+      if (focusEndAt <= Date.now()) {
+        focusSeconds = 0;
+        try { localStorage.removeItem(FOCUS_TIMER_KEY); } catch (error) { /* best effort */ }
+        recordFocusMinutes();
+        renderFocusTimer();
+        return;
+      }
+      focusSeconds = Math.max(0, Math.ceil((focusEndAt - Date.now()) / 1000));
+      focusRunning = focusSeconds > 0;
+      focusInterval = window.setInterval(tickFocusTimer, 500);
+    } catch (error) {
+      // Ignore a malformed timer snapshot.
+    }
+    renderFocusTimer();
   }
 
   function getTasks(date = selectedDate) {
@@ -934,6 +1496,21 @@
     }
   }
 
+  async function shareCheckinText() {
+    const text = $("#checkinOutput").value;
+    if (!text) return;
+    if (!navigator.share) {
+      await copyCheckinText();
+      showToast("当前浏览器不支持系统分享，已复制打卡文本");
+      return;
+    }
+    try {
+      await navigator.share({ title: "研途考研打卡", text });
+    } catch (error) {
+      if (error.name !== "AbortError") showToast("系统分享未完成，可改用复制按钮");
+    }
+  }
+
   function progressStage(percent) {
     if (percent === 0) return "未启动";
     if (percent < 20) return "启动";
@@ -1199,6 +1776,7 @@
     renderTimeline();
     renderCalendar();
     renderSettings();
+    supabaseSync.render();
   }
 
   function renderEverything() {
@@ -1439,6 +2017,59 @@
     }
   }
 
+  async function connectSyncFromForm() {
+    const button = $("#syncConnectButton");
+    const url = $("#syncProjectUrl")?.value;
+    const anonKey = $("#syncAnonKey")?.value;
+    const email = $("#syncEmail")?.value;
+    const password = $("#syncPassword")?.value;
+    if (button) button.disabled = true;
+    try {
+      await supabaseSync.configure(url, anonKey);
+      if (String(email || "").trim() && password) {
+        await supabaseSync.signIn(email, password);
+      } else if (!supabaseSync.currentUser) {
+        supabaseSync.setStatus("项目已连接，请填写邮箱和密码后再次登录", "pending");
+      }
+      showToast(supabaseSync.currentUser ? "云端同步已启用" : "项目已连接");
+    } catch (error) {
+      supabaseSync.setStatus(`连接失败：${String(error?.message || error).slice(0, 160)}`, "error");
+      showToast("云端连接失败，请检查项目地址、公钥和账户");
+    } finally {
+      if (button) button.disabled = false;
+      supabaseSync.render();
+    }
+  }
+
+  async function signUpFromForm() {
+    const button = $("#syncSignUpButton");
+    const url = $("#syncProjectUrl")?.value;
+    const anonKey = $("#syncAnonKey")?.value;
+    const email = $("#syncEmail")?.value;
+    const password = $("#syncPassword")?.value;
+    if (button) button.disabled = true;
+    try {
+      await supabaseSync.configure(url, anonKey);
+      await supabaseSync.signUp(email, password);
+      showToast("注册请求已发送，请检查邮箱验证链接");
+    } catch (error) {
+      supabaseSync.setStatus(`注册失败：${String(error?.message || error).slice(0, 160)}`, "error");
+      showToast("注册失败，请检查邮箱和密码");
+    } finally {
+      if (button) button.disabled = false;
+      supabaseSync.render();
+    }
+  }
+
+  async function signOutFromForm() {
+    try {
+      await supabaseSync.signOut();
+      showToast("已退出云端，仍可继续离线使用");
+    } catch (error) {
+      showToast("退出登录失败，请稍后重试");
+    }
+  }
+
   function bindEvents() {
     $$(".tab-button").forEach((button) => button.addEventListener("click", () => activateTab(button.dataset.tab)));
     window.addEventListener("hashchange", () => activateTab(location.hash.slice(1) || "today", false));
@@ -1450,6 +2081,13 @@
     $("#previousDay").addEventListener("click", () => switchDate(addDays(selectedDate, -1)));
     $("#nextDay").addEventListener("click", () => switchDate(addDays(selectedDate, 1)));
     $("#todayButton").addEventListener("click", () => switchDate(localDateKey()));
+    $("#focusTimerButton").addEventListener("click", () => {
+      renderFocusTimer();
+      openDialog("focusDialog");
+    });
+    $("#focusStartButton").addEventListener("click", startFocusTimer);
+    $("#focusResetButton").addEventListener("click", resetFocusTimer);
+    $("#focusPreset").addEventListener("change", resetFocusTimer);
     $("#addTaskButton").addEventListener("click", () => openTaskEditor());
     $("#generatePlanButton").addEventListener("click", generatePlan);
     $("#taskForm").addEventListener("submit", saveTaskFromDialog);
@@ -1466,6 +2104,7 @@
     $("#checkinForm").addEventListener("input", saveDraftSoon);
     $("#generateCheckinButton").addEventListener("click", generateCheckinText);
     $("#copyCheckinButton").addEventListener("click", copyCheckinText);
+    $("#shareCheckinButton").addEventListener("click", shareCheckinText);
     $("#subjectProgressList").addEventListener("input", handleProgressInput);
 
     $("#previousMonth").addEventListener("click", () => {
@@ -1500,6 +2139,18 @@
     });
     $("#exportButton").addEventListener("click", exportData);
     $("#importInput").addEventListener("change", (event) => importData(event.target.files?.[0]));
+    $("#syncForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      connectSyncFromForm();
+    });
+    $("#syncSignUpButton").addEventListener("click", signUpFromForm);
+    $("#syncSignOutButton").addEventListener("click", signOutFromForm);
+    $("#syncUseCloudButton").addEventListener("click", () => {
+      supabaseSync.useCloudVersion().catch(() => showToast("云端版本应用失败，请稍后重试"));
+    });
+    $("#syncKeepLocalButton").addEventListener("click", () => {
+      supabaseSync.keepLocalVersion().catch(() => showToast("本机版本上传失败，仍保留本地数据"));
+    });
 
     let resizeTimer = 0;
     window.addEventListener("resize", () => {
@@ -1517,7 +2168,9 @@
     setupDialogs();
     bindEvents();
     setupPwa();
+    restoreFocusTimer();
     renderEverything();
+    supabaseSync.init();
     activateTab(["today", "progress", "calendar", "settings"].includes(location.hash.slice(1)) ? location.hash.slice(1) : "today", false);
     window.requestAnimationFrame(drawMicrostructure);
     if (storageRecovered) showToast("原本地数据无法读取，已恢复为初始看板；可用备份重新导入");

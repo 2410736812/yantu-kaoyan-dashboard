@@ -10,6 +10,7 @@
   <link rel="icon" type="image/png" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -100,7 +101,10 @@
                 <p class="section-kicker">DAILY PLAN</p>
                 <h3 id="taskHeading">学习清单</h3>
               </div>
-              <button class="primary-button compact" id="addTaskButton" type="button"><span aria-hidden="true">＋</span> 新增</button>
+              <div class="section-heading-actions">
+                <button class="secondary-button compact" id="focusTimerButton" type="button">专注计时</button>
+                <button class="primary-button compact" id="addTaskButton" type="button"><span aria-hidden="true">＋</span> 新增</button>
+              </div>
             </div>
             <div class="plan-progress" aria-hidden="true"><span id="planProgressBar"></span></div>
             <p class="plan-caption" id="planCaption">完成一项，推进一点。</p>
@@ -180,7 +184,10 @@
             <div class="checkin-output" id="checkinOutputWrap" hidden>
               <div class="output-heading">
                 <strong>打卡文本</strong>
-                <button class="text-button compact" id="copyCheckinButton" type="button">复制</button>
+                <div class="section-heading-actions">
+                  <button class="text-button compact" id="shareCheckinButton" type="button">分享</button>
+                  <button class="text-button compact" id="copyCheckinButton" type="button">复制</button>
+                </div>
               </div>
               <textarea id="checkinOutput" rows="12" readonly></textarea>
             </div>
@@ -337,6 +344,28 @@
                 <button class="primary-button" id="installButton" type="button" hidden>安装到此设备</button>
                 <button class="secondary-button" type="button" data-open-dialog="syncDialog">手机同步方案</button>
               </div>
+              <form id="syncForm" class="sync-form" autocomplete="on">
+                <label><span>Supabase 项目地址</span><input id="syncProjectUrl" type="url" inputmode="url" placeholder="https://your-project.supabase.co" autocomplete="url"></label>
+                <label><span>Anon 公钥（可公开）</span><input id="syncAnonKey" type="text" spellcheck="false" placeholder="eyJhbGciOiJIUzI1NiIs..." autocomplete="off"></label>
+                <div class="form-grid two-columns">
+                  <label><span>邮箱</span><input id="syncEmail" type="email" autocomplete="email"></label>
+                  <label><span>密码</span><input id="syncPassword" type="password" minlength="6" autocomplete="current-password"></label>
+                </div>
+                <div class="button-row">
+                  <button class="primary-button" id="syncConnectButton" type="submit">连接并同步</button>
+                  <button class="secondary-button" id="syncSignUpButton" type="button">注册账户</button>
+                  <button class="text-button" id="syncSignOutButton" type="button" hidden>退出登录</button>
+                </div>
+                <p class="sync-status" id="syncStatus" role="status">尚未连接云端。未配置时，数据只保存在当前设备。</p>
+                <div class="sync-conflict" id="syncConflict" hidden>
+                  <strong>发现另一台设备的更新</strong>
+                  <p id="syncConflictText">请选择保留哪一份数据。</p>
+                  <div class="button-row">
+                    <button class="secondary-button" id="syncUseCloudButton" type="button">使用云端版本</button>
+                    <button class="primary-button" id="syncKeepLocalButton" type="button">保留本机并上传</button>
+                  </div>
+                </div>
+              </form>
             </div>
           </section>
 
@@ -376,7 +405,7 @@
 
     <footer class="app-footer">
       <span>数据默认留在你的设备中</span>
-      <span id="footerVersion">研途 v1.0</span>
+      <span id="footerVersion">研途 v1.4</span>
     </footer>
   </div>
 
@@ -410,6 +439,37 @@
     </form>
   </dialog>
 
+  <dialog id="focusDialog" class="app-dialog info-dialog">
+    <div class="dialog-heading">
+      <div><p class="section-kicker">FOCUS TIMER</p><h3>专注完成后自动记入当天打卡草稿</h3></div>
+      <button class="icon-button" type="button" data-close-dialog="focusDialog" aria-label="关闭" title="关闭">×</button>
+    </div>
+    <div class="focus-controls">
+      <label><span>科目</span>
+        <select id="focusSubject">
+          <option value="math">数学二</option>
+          <option value="english">英语一</option>
+          <option value="politics">政治</option>
+          <option value="material">材料物理化学</option>
+        </select>
+      </label>
+      <label><span>时长</span>
+        <select id="focusPreset">
+          <option value="25">25 分钟专注 / 5 分钟休息</option>
+          <option value="50">50 分钟专注 / 10 分钟休息</option>
+          <option value="90">90 分钟专注 / 15 分钟休息</option>
+        </select>
+      </label>
+    </div>
+    <div class="focus-clock" id="focusClock">25:00</div>
+    <p class="focus-status" id="focusStatus">准备开始</p>
+    <div class="dialog-actions">
+      <button class="secondary-button" id="focusResetButton" type="button">重置</button>
+      <span class="dialog-spacer"></span>
+      <button class="primary-button" id="focusStartButton" type="button">开始专注</button>
+    </div>
+  </dialog>
+
   <dialog id="syncDialog" class="app-dialog info-dialog">
     <div class="dialog-heading">
       <div><p class="section-kicker">PHONE SYNC</p><h3>电脑关机后，手机仍可查看</h3></div>
@@ -421,7 +481,7 @@
       <div class="sync-step"><span>3</span><div><strong>自动同步</strong><p>任务与打卡在手机、电脑之间更新。</p></div></div>
     </div>
     <div class="notice-box">
-      当前版本尚未连接云端，不会上传任何数据。网页和数据结构已经为同步预留接口；正式上线需要你确认部署平台并创建个人云账户。
+      未配置云端时，数据只保存在当前设备。配置 Supabase 后，手机和电脑登录同一账号即可同步；GitHub 仓库不会保存你的打卡内容。
     </div>
     <div class="dialog-actions">
       <button class="secondary-button" type="button" data-close-dialog="syncDialog">我知道了</button>
