@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17352f">
+  <meta name="description" content="2027 考研学习进度、每日计划与复盘看板">
+  <title>研途 · 2027 考研进度台</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="app-header">
+      <canvas id="microstructure" aria-hidden="true"></canvas>
+      <div class="header-shade" aria-hidden="true"></div>
+      <div class="header-inner">
+        <div class="brand-row">
+          <a class="brand" href="#today" aria-label="研途首页">
+            <span class="brand-mark">27</span>
+            <span>
+              <strong>研途</strong>
+              <small>KAOYAN CONTROL</small>
+            </span>
+          </a>
+          <button class="storage-badge" id="storageBadge" type="button" data-open-dialog="syncDialog">
+            <span class="status-dot"></span>
+            <span>仅此设备</span>
+          </button>
+        </div>
+
+        <div class="hero-copy">
+          <p class="eyebrow">清华大学深圳国际研究生院</p>
+          <h1>功能材料与器件 · 400 分目标</h1>
+          <div class="countdown-line" aria-live="polite">
+            <span class="countdown-number" id="countdownDays">--</span>
+            <span class="countdown-unit" id="countdownUnit">天</span>
+            <span class="countdown-label" id="countdownLabel">距暂定初试日</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <nav class="tab-bar" aria-label="主导航">
+      <div class="tab-bar-inner" role="tablist">
+        <button class="tab-button is-active" id="tab-today" type="button" role="tab" aria-selected="true" aria-controls="panel-today" data-tab="today">
+          <span class="tab-icon" aria-hidden="true">✓</span><span>今日</span>
+        </button>
+        <button class="tab-button" id="tab-progress" type="button" role="tab" aria-selected="false" aria-controls="panel-progress" data-tab="progress">
+          <span class="tab-icon" aria-hidden="true">↗</span><span>进度</span>
+        </button>
+        <button class="tab-button" id="tab-calendar" type="button" role="tab" aria-selected="false" aria-controls="panel-calendar" data-tab="calendar">
+          <span class="tab-icon" aria-hidden="true">□</span><span>日历</span>
+        </button>
+        <button class="tab-button" id="tab-settings" type="button" role="tab" aria-selected="false" aria-controls="panel-settings" data-tab="settings">
+          <span class="tab-icon" aria-hidden="true">⚙</span><span>设置</span>
+        </button>
+      </div>
+    </nav>
+
+    <main class="main-content">
+      <section class="tab-panel is-active" id="panel-today" role="tabpanel" aria-labelledby="tab-today" data-panel="today">
+        <div class="date-toolbar">
+          <div>
+            <p class="section-kicker" id="selectedDateWeekday">星期三</p>
+            <h2 id="selectedDateTitle">7 月 29 日</h2>
+          </div>
+          <div class="date-actions">
+            <button class="icon-button" id="previousDay" type="button" title="前一天" aria-label="前一天">‹</button>
+            <button class="text-button compact" id="todayButton" type="button">今天</button>
+            <button class="icon-button" id="nextDay" type="button" title="后一天" aria-label="后一天">›</button>
+          </div>
+        </div>
+
+        <div class="metric-strip" aria-label="当日概况">
+          <div class="metric-item">
+            <span>任务完成</span>
+            <strong id="todayCompletion">0 / 0</strong>
+          </div>
+          <div class="metric-item">
+            <span>计划时长</span>
+            <strong id="todayPlanned">0 分钟</strong>
+          </div>
+          <div class="metric-item">
+            <span>有效学习</span>
+            <strong id="todayActual">待打卡</strong>
+          </div>
+          <div class="metric-item">
+            <span>连续记录</span>
+            <strong id="streakCount">0 天</strong>
+          </div>
+        </div>
+
+        <div class="today-layout">
+          <section class="work-section task-section" aria-labelledby="taskHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">DAILY PLAN</p>
+                <h3 id="taskHeading">学习清单</h3>
+              </div>
+              <button class="primary-button compact" id="addTaskButton" type="button"><span aria-hidden="true">＋</span> 新增</button>
+            </div>
+            <div class="plan-progress" aria-hidden="true"><span id="planProgressBar"></span></div>
+            <p class="plan-caption" id="planCaption">完成一项，推进一点。</p>
+            <div class="task-list" id="taskList"></div>
+            <div class="empty-state" id="taskEmpty" hidden>
+              <strong id="taskEmptyTitle">这一天还没有计划</strong>
+              <p id="taskEmptyText">生成一份与当前阶段匹配的清单，再按你的状态调整。</p>
+              <button class="secondary-button" id="generatePlanButton" type="button">生成建议计划</button>
+            </div>
+          </section>
+
+          <section class="work-section checkin-section" aria-labelledby="checkinHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">23:00 REVIEW</p>
+                <h3 id="checkinHeading">晚间打卡</h3>
+              </div>
+              <span class="save-state" id="checkinSaveState">未保存</span>
+            </div>
+
+            <form id="checkinForm">
+              <div class="form-block">
+                <h4>睡眠与手机</h4>
+                <div class="form-grid three-columns">
+                  <label><span>入睡</span><input id="sleepStart" name="sleepStart" type="time"></label>
+                  <label><span>起床</span><input id="wakeTime" name="wakeTime" type="time"></label>
+                  <label><span>亮屏（小时）</span><input id="screenHours" name="screenHours" type="number" min="0" max="24" step="0.1" inputmode="decimal" placeholder="0"></label>
+                </div>
+              </div>
+
+              <div class="form-block">
+                <h4>四科有效学习</h4>
+                <div class="study-log-list" id="studyLogRows"></div>
+              </div>
+
+              <div class="form-block">
+                <h4>做题记录</h4>
+                <div class="question-grid">
+                  <fieldset>
+                    <legend>数学</legend>
+                    <label><span>正确</span><input id="mathCorrect" type="number" min="0" inputmode="numeric"></label>
+                    <span class="slash">/</span>
+                    <label><span>总题</span><input id="mathTotal" type="number" min="0" inputmode="numeric"></label>
+                  </fieldset>
+                  <fieldset>
+                    <legend>专业课</legend>
+                    <label><span>正确</span><input id="materialCorrect" type="number" min="0" inputmode="numeric"></label>
+                    <span class="slash">/</span>
+                    <label><span>总题</span><input id="materialTotal" type="number" min="0" inputmode="numeric"></label>
+                  </fieldset>
+                  <fieldset>
+                    <legend>英语阅读</legend>
+                    <label><span>正确</span><input id="englishCorrect" type="number" min="0" inputmode="numeric"></label>
+                    <span class="slash">/</span>
+                    <label><span>总题</span><input id="englishTotal" type="number" min="0" inputmode="numeric"></label>
+                  </fieldset>
+                  <fieldset>
+                    <legend>政治</legend>
+                    <label class="wide-field"><span>题量</span><input id="politicsTotal" type="number" min="0" inputmode="numeric"></label>
+                  </fieldset>
+                </div>
+              </div>
+
+              <div class="form-block">
+                <div class="form-grid two-columns">
+                  <label><span>未完成原因</span><textarea id="unfinishedReason" rows="2" placeholder="没有可留空"></textarea></label>
+                  <label><span>复盘备注</span><textarea id="reviewNote" rows="2" placeholder="今天最需要保留的一点"></textarea></label>
+                </div>
+              </div>
+
+              <div class="button-row">
+                <button class="primary-button" type="submit">保存打卡</button>
+                <button class="secondary-button" id="generateCheckinButton" type="button">生成打卡文本</button>
+              </div>
+            </form>
+
+            <div class="checkin-output" id="checkinOutputWrap" hidden>
+              <div class="output-heading">
+                <strong>打卡文本</strong>
+                <button class="text-button compact" id="copyCheckinButton" type="button">复制</button>
+              </div>
+              <textarea id="checkinOutput" rows="12" readonly></textarea>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="tab-panel" id="panel-progress" role="tabpanel" aria-labelledby="tab-progress" data-panel="progress" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="section-kicker">FIVE-MONTH MAP</p>
+            <h2>总览进度</h2>
+          </div>
+          <p class="page-note">总进度按四科分值加权；学习时长优先取打卡数据，未打卡时以已完成任务暂计。</p>
+        </div>
+
+        <section class="progress-overview">
+          <div class="progress-ring" id="overallRing" role="img" aria-label="总进度 0%">
+            <div><strong id="overallProgress">0%</strong><span>总进度</span></div>
+          </div>
+          <div class="score-target">
+            <span>目标分数</span>
+            <strong><span id="targetScoreTotal">400</span><small> / 500</small></strong>
+            <p id="targetScoreBreakdown">英语 65 · 政治 65 · 数学 135 · 专业课 135</p>
+          </div>
+          <div class="phase-now">
+            <span>当前阶段</span>
+            <strong id="currentPhase">启动诊断期</strong>
+            <p id="phaseDescription">稳住 2–3 小时有效学习，建立每天闭环。</p>
+          </div>
+        </section>
+
+        <div class="progress-layout">
+          <section class="work-section" aria-labelledby="subjectHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">SUBJECTS</p>
+                <h3 id="subjectHeading">四科进度</h3>
+              </div>
+              <span class="save-state">拖动即可校准</span>
+            </div>
+            <div class="subject-progress-list" id="subjectProgressList"></div>
+          </section>
+
+          <section class="work-section" aria-labelledby="hoursHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">LAST 7 DAYS</p>
+                <h3 id="hoursHeading">有效学习时长</h3>
+              </div>
+              <strong class="chart-total" id="sevenDayTotal">0h</strong>
+            </div>
+            <div class="bar-chart" id="hoursChart" aria-label="最近七天有效学习时长图"></div>
+          </section>
+        </div>
+
+        <section class="timeline-section" aria-labelledby="timelineHeading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">PHASES</p>
+              <h3 id="timelineHeading">五个月路线</h3>
+            </div>
+          </div>
+          <div class="phase-timeline" id="phaseTimeline"></div>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="panel-calendar" role="tabpanel" aria-labelledby="tab-calendar" data-panel="calendar" hidden>
+        <div class="calendar-toolbar">
+          <div>
+            <p class="section-kicker">STUDY CALENDAR</p>
+            <h2 id="calendarTitle">2026 年 7 月</h2>
+          </div>
+          <div class="date-actions">
+            <button class="icon-button" id="previousMonth" type="button" title="上个月" aria-label="上个月">‹</button>
+            <button class="text-button compact" id="currentMonthButton" type="button">本月</button>
+            <button class="icon-button" id="nextMonth" type="button" title="下个月" aria-label="下个月">›</button>
+          </div>
+        </div>
+
+        <section class="calendar-section">
+          <div class="calendar-weekdays" aria-hidden="true">
+            <span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span>
+          </div>
+          <div class="calendar-grid" id="calendarGrid"></div>
+          <div class="calendar-legend">
+            <span><i class="heat heat-0"></i>无记录</span>
+            <span><i class="heat heat-1"></i>起步</span>
+            <span><i class="heat heat-2"></i>达标</span>
+            <span><i class="heat heat-3"></i>高效</span>
+            <span><i class="exam-dot"></i>考试日</span>
+          </div>
+        </section>
+
+        <section class="calendar-detail" aria-labelledby="calendarDetailHeading">
+          <div>
+            <p class="section-kicker" id="calendarDetailWeekday">星期三</p>
+            <h3 id="calendarDetailHeading">7 月 29 日</h3>
+          </div>
+          <div class="calendar-detail-stats">
+            <p><span>学习</span><strong id="calendarDetailMinutes">0 分钟</strong></p>
+            <p><span>任务</span><strong id="calendarDetailTasks">0 / 0</strong></p>
+            <p><span>亮屏</span><strong id="calendarDetailScreen">未记录</strong></p>
+          </div>
+          <button class="secondary-button" id="openSelectedDayButton" type="button">打开当天</button>
+        </section>
+      </section>
+
+      <section class="tab-panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" data-panel="settings" hidden>
+        <div class="page-heading">
+          <div>
+            <p class="section-kicker">CONTROL ROOM</p>
+            <h2>目标与数据</h2>
+          </div>
+          <p class="page-note">考试日期暂按 2026 年 12 月 19 日计算，官方时间公布后可在这里修改。</p>
+        </div>
+
+        <div class="settings-layout">
+          <section class="work-section" aria-labelledby="examSettingsHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">EXAM</p>
+                <h3 id="examSettingsHeading">初试目标</h3>
+              </div>
+            </div>
+            <form id="settingsForm">
+              <div class="form-grid two-columns">
+                <label><span>目标院校</span><input id="targetSchool" type="text" maxlength="80"></label>
+                <label><span>方向</span><input id="targetProgram" type="text" maxlength="80"></label>
+                <label><span>暂定初试日</span><input id="examDate" type="date" required></label>
+                <label><span>总分</span><input id="targetTotalDisplay" type="text" value="400 / 500" readonly></label>
+              </div>
+              <div class="score-inputs">
+                <label><span>英语一</span><input id="targetEnglish" type="number" min="0" max="100" required></label>
+                <label><span>政治</span><input id="targetPolitics" type="number" min="0" max="100" required></label>
+                <label><span>数学二</span><input id="targetMath" type="number" min="0" max="150" required></label>
+                <label><span>材料物理化学</span><input id="targetMaterial" type="number" min="0" max="150" required></label>
+              </div>
+              <button class="primary-button" type="submit">保存目标</button>
+            </form>
+          </section>
+
+          <section class="work-section" aria-labelledby="deviceHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">DEVICE</p>
+                <h3 id="deviceHeading">手机与离线</h3>
+              </div>
+              <span class="connection-state local" id="connectionState"><i></i>仅此设备</span>
+            </div>
+            <div class="device-status">
+              <p id="installStatus">网页安装后可离线打开，数据仍只保存在当前设备。</p>
+              <div class="button-row">
+                <button class="primary-button" id="installButton" type="button" hidden>安装到此设备</button>
+                <button class="secondary-button" type="button" data-open-dialog="syncDialog">手机同步方案</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="work-section" aria-labelledby="dataHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">BACKUP</p>
+                <h3 id="dataHeading">数据备份</h3>
+              </div>
+            </div>
+            <p class="supporting-text">导出的文件包含全部任务、打卡和目标，可在另一台设备完整恢复。</p>
+            <div class="button-row">
+              <button class="secondary-button" id="exportButton" type="button">导出全部数据</button>
+              <label class="secondary-button file-button" for="importInput">导入数据</label>
+              <input id="importInput" type="file" accept="application/json,.json" hidden>
+            </div>
+            <p class="last-backup" id="lastBackup">尚未导出过备份</p>
+          </section>
+
+          <section class="work-section" aria-labelledby="rhythmHeading">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">RHYTHM</p>
+                <h3 id="rhythmHeading">执行基线</h3>
+              </div>
+            </div>
+            <dl class="rhythm-list">
+              <div><dt>实习结束前</dt><dd>160 分钟 / 天</dd></div>
+              <div><dt>8 月第一周</dt><dd>330 分钟 / 天</dd></div>
+              <div><dt>稳定期</dt><dd>420–480 分钟 / 天</dd></div>
+              <div><dt>固定课程</dt><dd>周一、周三 08:00；周五 16:00</dd></div>
+            </dl>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span>数据默认留在你的设备中</span>
+      <span id="footerVersion">研途 v1.0</span>
+    </footer>
+  </div>
+
+  <dialog id="taskDialog" class="app-dialog">
+    <form id="taskForm" method="dialog">
+      <div class="dialog-heading">
+        <div><p class="section-kicker">TASK</p><h3 id="taskDialogTitle">新增任务</h3></div>
+        <button class="icon-button" type="button" data-close-dialog="taskDialog" aria-label="关闭" title="关闭">×</button>
+      </div>
+      <input id="taskId" type="hidden">
+      <div class="form-grid two-columns">
+        <label><span>科目</span>
+          <select id="taskSubject" required>
+            <option value="math">数学二</option>
+            <option value="english">英语一</option>
+            <option value="politics">政治</option>
+            <option value="material">材料物理化学</option>
+            <option value="general">综合</option>
+          </select>
+        </label>
+        <label><span>预计分钟</span><input id="taskMinutes" type="number" min="5" max="720" step="5" required></label>
+      </div>
+      <label><span>任务名称</span><input id="taskTitle" type="text" maxlength="60" required></label>
+      <label><span>完成标准</span><textarea id="taskDetail" rows="3" maxlength="180" placeholder="例如：例题独立重做并标记错因"></textarea></label>
+      <div class="dialog-actions">
+        <button class="danger-text-button" id="deleteTaskButton" type="button" hidden>删除任务</button>
+        <span class="dialog-spacer"></span>
+        <button class="secondary-button" type="button" data-close-dialog="taskDialog">取消</button>
+        <button class="primary-button" type="submit">保存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="syncDialog" class="app-dialog info-dialog">
+    <div class="dialog-heading">
+      <div><p class="section-kicker">PHONE SYNC</p><h3>电脑关机后，手机仍可查看</h3></div>
+      <button class="icon-button" type="button" data-close-dialog="syncDialog" aria-label="关闭" title="关闭">×</button>
+    </div>
+    <div class="sync-flow">
+      <div class="sync-step"><span>1</span><div><strong>发布网页</strong><p>获得一个手机能随时打开的 HTTPS 地址。</p></div></div>
+      <div class="sync-step"><span>2</span><div><strong>账户登录</strong><p>用你的邮箱隔离学习数据。</p></div></div>
+      <div class="sync-step"><span>3</span><div><strong>自动同步</strong><p>任务与打卡在手机、电脑之间更新。</p></div></div>
+    </div>
+    <div class="notice-box">
+      当前版本尚未连接云端，不会上传任何数据。网页和数据结构已经为同步预留接口；正式上线需要你确认部署平台并创建个人云账户。
+    </div>
+    <div class="dialog-actions">
+      <button class="secondary-button" type="button" data-close-dialog="syncDialog">我知道了</button>
+    </div>
+  </dialog>
+
+  <dialog id="installDialog" class="app-dialog info-dialog">
+    <div class="dialog-heading">
+      <div><p class="section-kicker">INSTALL</p><h3>添加到手机主屏幕</h3></div>
+      <button class="icon-button" type="button" data-close-dialog="installDialog" aria-label="关闭" title="关闭">×</button>
+    </div>
+    <div class="install-instructions" id="installInstructions"></div>
+    <div class="dialog-actions"><button class="primary-button" type="button" data-close-dialog="installDialog">完成</button></div>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="app.js" defer></script>
+</body>
+</html>
