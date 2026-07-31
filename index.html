@@ -339,14 +339,14 @@
               <span class="connection-state local" id="connectionState"><i></i>仅此设备</span>
             </div>
             <div class="device-status">
-              <p id="installStatus">网页安装后可离线打开，数据仍只保存在当前设备。</p>
+              <p id="installStatus">网页安装后可离线打开；离线修改先保存在本机，登录后联网自动同步。</p>
               <div class="button-row">
                 <button class="primary-button" id="installButton" type="button" hidden>安装到此设备</button>
                 <button class="secondary-button" type="button" data-open-dialog="syncDialog">手机同步方案</button>
               </div>
               <form id="syncForm" class="sync-form" autocomplete="on">
-                <label><span>Supabase 项目地址</span><input id="syncProjectUrl" type="url" inputmode="url" placeholder="https://your-project.supabase.co" autocomplete="url"></label>
-                <label><span>Anon 公钥（可公开）</span><input id="syncAnonKey" type="text" spellcheck="false" placeholder="eyJhbGciOiJIUzI1NiIs..." autocomplete="off"></label>
+                <label><span>云端项目地址（已预设）</span><input id="syncProjectUrl" type="url" inputmode="url" placeholder="https://your-project.supabase.co" autocomplete="url"></label>
+                <label><span>同步公钥（已预设，可公开）</span><input id="syncAnonKey" type="text" spellcheck="false" placeholder="sb_publishable_..." autocomplete="off"></label>
                 <div class="form-grid two-columns">
                   <label><span>邮箱</span><input id="syncEmail" type="email" autocomplete="email"></label>
                   <label><span>密码</span><input id="syncPassword" type="password" minlength="6" autocomplete="current-password"></label>
@@ -404,8 +404,8 @@
     </main>
 
     <footer class="app-footer">
-      <span>数据默认留在你的设备中</span>
-      <span id="footerVersion">研途 v1.4</span>
+      <span>离线优先 · 登录后云端同步</span>
+      <span id="footerVersion">研途 v1.4.1</span>
     </footer>
   </div>
 
@@ -481,7 +481,7 @@
       <div class="sync-step"><span>3</span><div><strong>自动同步</strong><p>任务与打卡在手机、电脑之间更新。</p></div></div>
     </div>
     <div class="notice-box">
-      未配置云端时，数据只保存在当前设备。配置 Supabase 后，手机和电脑登录同一账号即可同步；GitHub 仓库不会保存你的打卡内容。
+      云端项目已经预配置。手机和电脑使用同一邮箱账号登录即可同步；账号密码和打卡内容都不会保存到 GitHub 仓库。
     </div>
     <div class="dialog-actions">
       <button class="secondary-button" type="button" data-close-dialog="syncDialog">我知道了</button>

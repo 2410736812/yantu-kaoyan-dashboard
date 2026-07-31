@@ -350,6 +350,10 @@
   const SUPABASE_SYNC_MARKER_KEY = "yantu-kaoyan-supabase-sync-marker-v1";
   const SUPABASE_LOCAL_BACKUP_KEY = "yantu-kaoyan-supabase-pre-sync-backup-v1";
   const SUPABASE_TABLE = "study_states";
+  const DEFAULT_SUPABASE_CONFIG = Object.freeze({
+    url: "https://eyvjoqtjzbfueliewaki.supabase.co",
+    anonKey: "sb_publishable_WYWHWvqwk4Nr02l_JGrCnQ_2Ji-npxx"
+  });
   let syncApplyingRemote = false;
   const supabaseSync = (() => {
     let client = null;
@@ -363,16 +367,27 @@
     let conflict = null;
     let visual = { text: "仅此设备", kind: "local" };
 
+    function normalizeProjectUrl(value) {
+      return String(value || "")
+        .trim()
+        .replace(/\/+$/, "")
+        .replace(/\/rest\/v1$/i, "");
+    }
+
+    function validatedConfig(candidate) {
+      if (!candidate || typeof candidate !== "object") return null;
+      const url = normalizeProjectUrl(candidate.url);
+      const anonKey = String(candidate.anonKey || "").trim();
+      if (!/^https:\/\/[^\s]+$/i.test(url) || anonKey.length < 20) return null;
+      return { url, anonKey };
+    }
+
     function readConfig() {
       try {
         const parsed = JSON.parse(localStorage.getItem(SUPABASE_CONFIG_KEY) || "null");
-        if (!parsed || typeof parsed !== "object") return null;
-        const url = String(parsed.url || "").trim().replace(/\/$/, "");
-        const anonKey = String(parsed.anonKey || "").trim();
-        if (!/^https:\/\/[^\s]+$/i.test(url) || anonKey.length < 20) return null;
-        return { url, anonKey };
+        return validatedConfig(parsed) || { ...DEFAULT_SUPABASE_CONFIG };
       } catch (error) {
-        return null;
+        return { ...DEFAULT_SUPABASE_CONFIG };
       }
     }
 
@@ -693,7 +708,7 @@
     }
 
     async function configure(url, anonKey) {
-      const normalizedUrl = String(url || "").trim().replace(/\/$/, "");
+      const normalizedUrl = normalizeProjectUrl(url);
       const normalizedKey = String(anonKey || "").trim();
       if (!/^https:\/\/[^\s]+$/i.test(normalizedUrl)) throw new Error("Supabase 项目地址必须以 https:// 开头");
       if (normalizedKey.length < 20) throw new Error("请填写有效的 anon 公钥");
