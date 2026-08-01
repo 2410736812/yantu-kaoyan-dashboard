@@ -2161,6 +2161,8 @@
   function friendlyAuthError(error) {
     const message = String(error?.message || error || "未知错误");
     const detail = `${String(error?.code || "")} ${message}`;
+    const cooldown = message.match(/request this after\s+(\d+)\s+seconds?/i);
+    if (cooldown) return `操作过于频繁，请等待 ${cooldown[1]} 秒后再试`;
     if (/invalid_credentials|invalid login credentials/i.test(detail)) return "邮箱或看板密码不正确，可使用“忘记密码”重置";
     if (/email_not_confirmed|email not confirmed/i.test(detail)) return "邮箱尚未验证，请打开最新的确认邮件";
     if (/user_already_exists|user already registered/i.test(detail)) return "该邮箱已经注册，请直接登录或重置密码";
