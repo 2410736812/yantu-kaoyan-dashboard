@@ -354,6 +354,8 @@
     url: "https://eyvjoqtjzbfueliewaki.supabase.co",
     anonKey: "sb_publishable_WYWHWvqwk4Nr02l_JGrCnQ_2Ji-npxx"
   });
+  const AUTH_REDIRECT_URL = "https://2410736812.github.io/yantu-kaoyan-dashboard/";
+  const PASSWORD_RECOVERY_KEY = "yantu-kaoyan-password-recovery-v1";
   let syncApplyingRemote = false;
   const supabaseSync = (() => {
     let client = null;
@@ -365,7 +367,15 @@
     let pollTimer = 0;
     let pushQueued = false;
     let conflict = null;
+    let passwordRecovery = false;
+    let pendingCallbackError = "";
     let visual = { text: "仅此设备", kind: "local" };
+
+    try {
+      passwordRecovery = sessionStorage.getItem(PASSWORD_RECOVERY_KEY) === "1";
+    } catch (error) {
+      passwordRecovery = false;
+    }
 
     function normalizeProjectUrl(value) {
       return String(value || "")
@@ -431,7 +441,56 @@
       }
       const signOut = $("#syncSignOutButton");
       if (signOut) signOut.hidden = !currentUser;
+      const resetPassword = $("#syncPasswordResetButton");
+      if (resetPassword) {
+        resetPassword.hidden = Boolean(currentUser) && !passwordRecovery;
+        resetPassword.textContent = passwordRecovery ? "设置新密码" : "忘记密码";
+      }
       renderConflict();
+    }
+
+    function isAuthCallbackLocation() {
+      const hash = location.hash.slice(1);
+      const query = new URLSearchParams(location.search);
+      return /(?:^|&)(?:access_token|error|error_code)=/i.test(hash) || query.has("code");
+    }
+
+    function authCallbackErrorText() {
+      const hash = new URLSearchParams(location.hash.slice(1));
+      const query = new URLSearchParams(location.search);
+      const code = hash.get("error_code") || query.get("error_code") || "";
+      const description = hash.get("error_description") || query.get("error_description") || "";
+      if (!code && !description && !hash.get("error") && !query.get("error")) return "";
+      if (/otp_expired/i.test(code)) return "链接已过期或已使用，请重新发送";
+      return description || "认证链接无效，请重新发送";
+    }
+
+    function finishAuthCallbackNavigation(force = false) {
+      if (!force && !isAuthCallbackLocation()) return;
+      history.replaceState(null, "", `${location.pathname}#settings`);
+      activateTab("settings", false);
+    }
+
+    function beginPasswordRecovery() {
+      passwordRecovery = true;
+      try {
+        sessionStorage.setItem(PASSWORD_RECOVERY_KEY, "1");
+      } catch (error) {
+        // The active recovery session remains usable without this reload hint.
+      }
+      finishAuthCallbackNavigation(true);
+      setVisual("重置链接已验证，请设置新的看板密码", "pending");
+      render();
+      window.setTimeout(() => openDialog("passwordResetDialog"), 0);
+    }
+
+    function clearPasswordRecovery() {
+      passwordRecovery = false;
+      try {
+        sessionStorage.removeItem(PASSWORD_RECOVERY_KEY);
+      } catch (error) {
+        // Session storage only reopens an interrupted recovery flow.
+      }
     }
 
     function render() {
@@ -710,9 +769,24 @@
     async function configure(url, anonKey) {
       const normalizedUrl = normalizeProjectUrl(url);
       const normalizedKey = String(anonKey || "").trim();
+      const callbackError = authCallbackErrorText();
+      if (callbackError) pendingCallbackError = callbackError;
+      else if (client) pendingCallbackError = "";
       if (!/^https:\/\/[^\s]+$/i.test(normalizedUrl)) throw new Error("Supabase 项目地址必须以 https:// 开头");
       if (normalizedKey.length < 20) throw new Error("请填写有效的 anon 公钥");
       if (!window.supabase?.createClient) throw new Error("云端组件尚未加载，请联网后刷新页面");
+      if (client && config?.url === normalizedUrl && config?.anonKey === normalizedKey) {
+        const { data, error } = await client.auth.getSession();
+        if (error) throw error;
+        await handleSession(data.session?.user || null);
+        if (callbackError) {
+          finishAuthCallbackNavigation(true);
+          setVisual(callbackError, "error");
+        } else if (passwordRecovery && data.session?.user) {
+          beginPasswordRecovery();
+        }
+        return Boolean(data.session?.user);
+      }
       await removeChannel();
       if (authSubscription) {
         authSubscription.unsubscribe();
@@ -723,12 +797,33 @@
         auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
       });
       const authState = client.auth.onAuthStateChange((event, session) => {
-        window.setTimeout(() => handleSession(session?.user || null).catch((error) => setVisual(`同步初始化失败：${errorText(error)}`, "error")), 0);
+        window.setTimeout(async () => {
+          try {
+            await handleSession(session?.user || null);
+            if (event === "PASSWORD_RECOVERY") beginPasswordRecovery();
+            else if (event === "SIGNED_IN") {
+              pendingCallbackError = "";
+              finishAuthCallbackNavigation();
+            } else if (pendingCallbackError) {
+              finishAuthCallbackNavigation(true);
+              setVisual(pendingCallbackError, "error");
+              pendingCallbackError = "";
+            }
+          } catch (error) {
+            setVisual(`同步初始化失败：${errorText(error)}`, "error");
+          }
+        }, 0);
       });
       authSubscription = authState?.data?.subscription || null;
       const { data, error } = await client.auth.getSession();
       if (error) throw error;
       await handleSession(data.session?.user || null);
+      if (callbackError) {
+        finishAuthCallbackNavigation(true);
+        setVisual(callbackError, "error");
+      } else if (passwordRecovery && data.session?.user) {
+        beginPasswordRecovery();
+      }
       return Boolean(data.session?.user);
     }
 
@@ -740,21 +835,48 @@
 
     async function signUp(email, password) {
       if (!client) throw new Error("请先填写项目地址、公钥并连接");
-      const { data, error } = await client.auth.signUp({ email: String(email || "").trim(), password: String(password || "") });
+      const { data, error } = await client.auth.signUp({
+        email: String(email || "").trim(),
+        password: String(password || ""),
+        options: { emailRedirectTo: AUTH_REDIRECT_URL }
+      });
       if (error) throw error;
       if (!data.session) setVisual("注册成功，请先完成邮箱验证", "pending");
+    }
+
+    async function requestPasswordReset(email) {
+      if (!client) throw new Error("请先连接云端项目");
+      const normalizedEmail = String(email || "").trim();
+      if (!normalizedEmail) throw new Error("请先填写注册邮箱");
+      const { error } = await client.auth.resetPasswordForEmail(normalizedEmail, { redirectTo: AUTH_REDIRECT_URL });
+      if (error) throw error;
+      setVisual("如果该邮箱已注册，重置邮件已经发送", "pending");
+    }
+
+    async function updatePassword(password) {
+      if (!client || !currentUser || !passwordRecovery) throw new Error("请先打开最新的密码重置邮件链接");
+      const normalizedPassword = String(password || "");
+      if (normalizedPassword.length < 6) throw new Error("新密码至少需要 6 位");
+      const { error } = await client.auth.updateUser({ password: normalizedPassword });
+      if (error) throw error;
+      clearPasswordRecovery();
+      setVisual("新密码已保存，云端同步已启用", "synced");
+      render();
     }
 
     async function signOut() {
       if (!client) return;
       const { error } = await client.auth.signOut();
       if (error) throw error;
+      clearPasswordRecovery();
       pushQueued = false;
       stopPolling();
       setVisual("已退出云端，仅此设备", "local");
     }
 
     async function init() {
+      const initialCallbackError = authCallbackErrorText();
+      if (initialCallbackError) pendingCallbackError = initialCallbackError;
       window.addEventListener("online", () => {
         if (currentUser && !conflict) pullOrPush().catch(() => undefined);
       });
@@ -778,6 +900,8 @@
       configure,
       signIn,
       signUp,
+      requestPasswordReset,
+      updatePassword,
       signOut,
       useCloudVersion,
       keepLocalVersion,
@@ -785,6 +909,7 @@
       render,
       setStatus: setVisual,
       get currentUser() { return currentUser; },
+      get passwordRecovery() { return passwordRecovery; },
       get visual() { return visual; }
     };
   })();
@@ -802,6 +927,7 @@
   function openDialog(id) {
     const dialog = document.getElementById(id);
     if (!dialog) return;
+    if (dialog.open) return;
     if (typeof dialog.showModal === "function") dialog.showModal();
     else dialog.setAttribute("open", "");
   }
@@ -2032,6 +2158,20 @@
     }
   }
 
+  function friendlyAuthError(error) {
+    const message = String(error?.message || error || "未知错误");
+    const detail = `${String(error?.code || "")} ${message}`;
+    if (/invalid_credentials|invalid login credentials/i.test(detail)) return "邮箱或看板密码不正确，可使用“忘记密码”重置";
+    if (/email_not_confirmed|email not confirmed/i.test(detail)) return "邮箱尚未验证，请打开最新的确认邮件";
+    if (/user_already_exists|user already registered/i.test(detail)) return "该邮箱已经注册，请直接登录或重置密码";
+    if (/otp_expired|expired.*(?:link|token)|token.*expired/i.test(detail)) return "链接已过期或已使用，请重新发送";
+    if (/weak_password|password.+(?:6|characters)/i.test(detail)) return "密码至少需要 6 位";
+    if (/same_password|same password|different from the old password/i.test(detail)) return "新密码不能与原密码相同";
+    if (/invalid_email|invalid email/i.test(detail)) return "邮箱格式不正确";
+    if (/over_request_rate_limit|rate limit|too many requests/i.test(detail)) return "操作过于频繁，请稍后再试";
+    return message.slice(0, 160);
+  }
+
   async function connectSyncFromForm() {
     const button = $("#syncConnectButton");
     const url = $("#syncProjectUrl")?.value;
@@ -2048,7 +2188,7 @@
       }
       showToast(supabaseSync.currentUser ? "云端同步已启用" : "项目已连接");
     } catch (error) {
-      supabaseSync.setStatus(`连接失败：${String(error?.message || error).slice(0, 160)}`, "error");
+      supabaseSync.setStatus(`连接失败：${friendlyAuthError(error)}`, "error");
       showToast("云端连接失败，请检查项目地址、公钥和账户");
     } finally {
       if (button) button.disabled = false;
@@ -2068,11 +2208,58 @@
       await supabaseSync.signUp(email, password);
       showToast("注册请求已发送，请检查邮箱验证链接");
     } catch (error) {
-      supabaseSync.setStatus(`注册失败：${String(error?.message || error).slice(0, 160)}`, "error");
+      supabaseSync.setStatus(`注册失败：${friendlyAuthError(error)}`, "error");
       showToast("注册失败，请检查邮箱和密码");
     } finally {
       if (button) button.disabled = false;
       supabaseSync.render();
+    }
+  }
+
+  async function requestPasswordResetFromForm() {
+    if (supabaseSync.passwordRecovery) {
+      openDialog("passwordResetDialog");
+      return;
+    }
+    const button = $("#syncPasswordResetButton");
+    const url = $("#syncProjectUrl")?.value;
+    const anonKey = $("#syncAnonKey")?.value;
+    const email = $("#syncEmail")?.value;
+    if (button) button.disabled = true;
+    try {
+      await supabaseSync.configure(url, anonKey);
+      await supabaseSync.requestPasswordReset(email);
+      showToast("如果账号存在，重置邮件已发送");
+    } catch (error) {
+      supabaseSync.setStatus(`重置失败：${friendlyAuthError(error)}`, "error");
+      showToast("暂时无法发送重置邮件");
+    } finally {
+      if (button) button.disabled = false;
+      supabaseSync.render();
+    }
+  }
+
+  async function updatePasswordFromDialog(event) {
+    event.preventDefault();
+    const password = $("#newSyncPassword").value;
+    const confirmation = $("#confirmSyncPassword").value;
+    const button = $("#saveSyncPasswordButton");
+    if (password !== confirmation) {
+      showToast("两次输入的新密码不一致");
+      return;
+    }
+    button.disabled = true;
+    try {
+      await supabaseSync.updatePassword(password);
+      $("#syncPassword").value = "";
+      $("#newSyncPassword").value = "";
+      $("#confirmSyncPassword").value = "";
+      closeDialog("passwordResetDialog");
+      showToast("新密码已保存");
+    } catch (error) {
+      showToast(friendlyAuthError(error));
+    } finally {
+      button.disabled = false;
     }
   }
 
@@ -2159,7 +2346,9 @@
       connectSyncFromForm();
     });
     $("#syncSignUpButton").addEventListener("click", signUpFromForm);
+    $("#syncPasswordResetButton").addEventListener("click", requestPasswordResetFromForm);
     $("#syncSignOutButton").addEventListener("click", signOutFromForm);
+    $("#passwordResetForm").addEventListener("submit", updatePasswordFromDialog);
     $("#syncUseCloudButton").addEventListener("click", () => {
       supabaseSync.useCloudVersion().catch(() => showToast("云端版本应用失败，请稍后重试"));
     });
